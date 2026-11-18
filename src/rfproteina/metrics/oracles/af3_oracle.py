@@ -654,7 +654,10 @@ class AF3Oracle(OracleMetric):
                 disambiguated_valid = self._renumber_res_ids_per_chain(disambiguated_valid)
 
             # Inline CIF in the manifest (avoid file I/O)
-            cif_string = to_cif_string(disambiguated_valid.copy(), config=CIFWriteConfig(id=job_name))
+            # Upstream AF3 requires entity types to retain non-polymer chains (ligands).
+            cif_string = to_cif_string(
+                disambiguated_valid.copy(), config=CIFWriteConfig(id=job_name, include_entity_categories=True)
+            )
             # Batch-index prefix makes each dir unique so sibling benchmarks sharing a target can't collide.
             af3_output_dir = af3_outputs_root / f"{idx:04d}_{job_name}"
 

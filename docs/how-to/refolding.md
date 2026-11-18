@@ -12,8 +12,25 @@ refolding is its own metric family and how a design can carry more than one refo
 ## Set up the oracle
 
 Refolding needs a structure prediction **oracle**, which runs in a separate runtime from
-the model environment. AF3 and OpenFold3 use the AF3 Apptainer runtime; AF2 also supports
-Docker and Pyxis through `AF2_RUNTIME_BACKEND`.
+the model environment. AF3 and OpenFold3 use the AF3 Apptainer runtime by default;
+AF2 also supports Docker and Pyxis through `AF2_RUNTIME_BACKEND`.
+
+To use an existing AF3 installation without Apptainer, set these in your environment file:
+
+```bash
+AF3_NATIVE_PYTHON=/path/to/af3-environment/bin/python
+AF3_MODEL_DIR=/path/to/af3/weights
+AF3_JAX_CACHE_DIR=/path/to/writable/jax_cache
+```
+
+Create the cache directory first. Both direct folds and persistent workers then use that
+interpreter; `AF3_IMAGE` is unnecessary. The AF3 environment must contain the libraries used
+by `src/rfproteina/af3/run_alphafold_batch.py`. Upstream AF3 weights use
+`metrics/refolding_oracles=af3`; converted OpenFold3 weights require an OF3-capable AF3 fork.
+Native workers default `JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES=none` to avoid the observed
+shared-filesystem autotuning-cache write failure. Normal JAX compilation caching remains enabled;
+an explicitly exported value overrides this default. Use heavy-atom structures for refolding:
+AF3 does not return explicit hydrogen coordinates for the atom-mapping step.
 
 - **AF3** is the default. Set `AF3_IMAGE`, `AF3_MODEL_DIR`, and `AF3_JAX_CACHE_DIR` in your
   environment file, following the paths the download script prints. See

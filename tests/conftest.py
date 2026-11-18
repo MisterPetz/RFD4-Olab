@@ -142,12 +142,15 @@ AF3_MODEL_DIR = os.environ.get("AF3_MODEL_DIR", "")
 
 
 def _has_af3() -> bool:
-    """Check if AF3 is available: runtime image, apptainer binary, and weights all present."""
+    """Check if the selected native or container AF3 runtime and weights are configured."""
+    native_python = os.environ.get("AF3_NATIVE_PYTHON", "").strip()
+    if native_python:
+        return os.path.isfile(native_python) and os.access(native_python, os.X_OK) and bool(AF3_MODEL_DIR)
     return os.path.isfile(AF3_IMAGE) and shutil.which("apptainer") is not None and bool(AF3_MODEL_DIR)
 
 
 has_af3 = _has_af3()
-skip_if_no_af3 = pytest.mark.skipif(not has_af3, reason="AF3 apptainer image not available")
+skip_if_no_af3 = pytest.mark.skipif(not has_af3, reason="AF3 runtime not available")
 
 AF2_IMAGE = os.environ.get("AF2_IMAGE", "")
 AF2_MODEL_DIR = os.environ.get("AF2_MODEL_DIR", "")

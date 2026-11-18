@@ -1,0 +1,108 @@
+diff --git a/src/rfproteina/af3/af3_apptainer.py b/src/rfproteina/af3/af3_apptainer.py
+index b83cbe3..a86cf9b 100644
+--- a/src/rfproteina/af3/af3_apptainer.py
++++ b/src/rfproteina/af3/af3_apptainer.py
+@@ -112,31 +112,61 @@ def build_apptainer_fold_command(
+             subprocess loads AF3 once and reads manifest paths on stdin
+             instead of folding a single ``--manifest`` argument and exiting.
+     """
+-    sif = _require("AF3_IMAGE")
+     jax_cache = _require("AF3_JAX_CACHE_DIR")
+     weights = _require("AF3_MODEL_DIR")
+     if batch_script is None:
+         batch_script = _DEFAULT_BATCH_SCRIPT
+     batch_path = Path(batch_script).resolve()
+ 
++    native_python = os.environ.get("AF3_NATIVE_PYTHON", "").strip()
++    if native_python:
++        # Native (non-apptainer) route: a local AlphaFold 3 install whose
++        # interpreter can ``import alphafold3`` and ``import jax`` with CUDA.
++        #
++        # The image only ever supplied the interpreter and those two packages --
++        # ``run_alphafold_batch.py`` and its sibling ``af3_runtime.py`` are bind
++        # mounted from this repo, and every bind above is an identity
++        # ``host:host`` mapping, so nothing is remapped and dropping the
++        # container changes no path. ``env`` scopes the variables to the child
++        # rather than mutating this process, which matters because
++        # CUDA_VISIBLE_DEVICES here would otherwise retarget the parent's own GPU.
++        prefix = [
++            "env",
++            f"CUDA_VISIBLE_DEVICES={int(gpu_device)}",
++            "XLA_PYTHON_CLIENT_PREALLOCATE=false",
++            "JAX_PLATFORMS=cuda",
++            f"AF3_MODEL_DIR={weights}",
++            # af3_runtime.py sits beside the batch script; without the container's
++            # bind the interpreter still needs it on the import path.
++            f"PYTHONPATH={batch_path.parent}" + (
++                f":{os.environ['PYTHONPATH']}" if os.environ.get("PYTHONPATH") else ""
++            ),
++            native_python,
++        ]
++    else:
++        sif = _require("AF3_IMAGE")
++        prefix = [
++            "apptainer",
++            "run",
++            "--nv",
++            "--env",
++            f"CUDA_VISIBLE_DEVICES={int(gpu_device)}",
++            "--env",
++            "XLA_PYTHON_CLIENT_PREALLOCATE=false",
++            "--env",
++            "JAX_PLATFORMS=cuda",
++            "--env",
++            f"AF3_MODEL_DIR={weights}",
++            *_data_bind_args(),
++            *_af3_resource_bind_args(),
++            "--bind",
++            f"{batch_path.parent}:{batch_path.parent}",
++            sif,
++            "python",
++        ]
++
+     cmd = [
+-        "apptainer",
+-        "run",
+-        "--nv",
+-        "--env",
+-        f"CUDA_VISIBLE_DEVICES={int(gpu_device)}",
+-        "--env",
+-        "XLA_PYTHON_CLIENT_PREALLOCATE=false",
+-        "--env",
+-        "JAX_PLATFORMS=cuda",
+-        "--env",
+-        f"AF3_MODEL_DIR={weights}",
+-        *_data_bind_args(),
+-        *_af3_resource_bind_args(),
+-        "--bind",
+-        f"{batch_path.parent}:{batch_path.parent}",
+-        sif,
+-        "python",
++        *prefix,
+         str(batch_script),
+         f"--num_recycles={AF3_NUM_RECYCLES}",
+         f"--flash_attention_implementation={AF3_FLASH_ATTENTION_IMPLEMENTATION}",
+diff --git a/src/rfproteina/af3/af3_daemon.py b/src/rfproteina/af3/af3_daemon.py
+index 2646a33..0c4a86a 100644
+--- a/src/rfproteina/af3/af3_daemon.py
++++ b/src/rfproteina/af3/af3_daemon.py
+@@ -37,7 +37,18 @@ from af3_apptainer import (
+     build_apptainer_fold_command,
+ )
+ 
+-_REQUIRED_ENV_VARS = ("AF3_IMAGE", "AF3_JAX_CACHE_DIR", "AF3_MODEL_DIR")
++def _required_env_vars() -> tuple[str, ...]:
++    """Env vars the oracle cannot run without.
++
++    ``AF3_IMAGE`` is only needed for the apptainer route; a native install
++    selected by ``AF3_NATIVE_PYTHON`` supplies the interpreter instead.
++    """
++    if os.environ.get("AF3_NATIVE_PYTHON", "").strip():
++        return ("AF3_NATIVE_PYTHON", "AF3_JAX_CACHE_DIR", "AF3_MODEL_DIR")
++    return ("AF3_IMAGE", "AF3_JAX_CACHE_DIR", "AF3_MODEL_DIR")
++
++
++_REQUIRED_ENV_VARS = _required_env_vars()
+ 
+ 
+ # ----------------------------------------------------------------------------

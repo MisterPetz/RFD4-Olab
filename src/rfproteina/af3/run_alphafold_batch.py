@@ -149,7 +149,8 @@ def _featurise(
         conformer_max_iterations=conformer_max_iters,
         resolve_msa_overlaps=resolve_msa_overlaps,
         fix_standalone_glycans=True,
-        of3_weights=of3_weights,
+        # Upstream AF3 has no OF3 keyword; the OF3 fork defaults it to False.
+        **({"of3_weights": True} if of3_weights else {}),
     )
 
 

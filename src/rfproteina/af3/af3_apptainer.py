@@ -1,4 +1,4 @@
-"""AF3 apptainer command builder shared by ``af3_daemon`` (warm-worker spawner)
+"""AF3 command builder shared by ``af3_daemon`` (warm-worker spawner)
 and :py:class:`~rfproteina.metrics.oracles.af3_oracle.AF3Oracle` (direct fallback
 route).
 
@@ -31,6 +31,32 @@ def _require(name: str) -> str:
     if not value:
         raise OSError(f"{name} is not set. Source .ipd/.env.<cluster> before running.")
     return value
+
+
+def required_env_vars() -> tuple[str, ...]:
+    """Resolve worker requirements when called, after runtime settings are loaded."""
+    interpreter = "AF3_NATIVE_PYTHON" if os.environ.get("AF3_NATIVE_PYTHON", "").strip() else "AF3_IMAGE"
+    return (interpreter, "AF3_JAX_CACHE_DIR", "AF3_MODEL_DIR")
+
+
+def _worker_args(manifest_path: str | Path | None, save_full_outputs: bool, serve: bool) -> list[str]:
+    """Keep the model settings identical for native and container workers."""
+    args = [
+        f"--num_recycles={AF3_NUM_RECYCLES}",
+        f"--flash_attention_implementation={AF3_FLASH_ATTENTION_IMPLEMENTATION}",
+        "--num_diffusion_samples=1",
+        "--gpu_device=0",
+        f"--jax_compilation_cache_dir={_require('AF3_JAX_CACHE_DIR')}",
+        f"--model_dir={_require('AF3_MODEL_DIR')}",
+        f"--save_full_outputs={'true' if save_full_outputs else 'false'}",
+    ]
+    if serve:
+        args.append("--serve")
+    else:
+        if manifest_path is None:
+            raise ValueError("manifest_path is required when serve is False.")
+        args.append(f"--manifest={manifest_path}")
+    return args
 
 
 def _deduped_bind_specs(*specs: str) -> list[str]:
@@ -91,7 +117,7 @@ def build_apptainer_fold_command(
     batch_script: str | Path | None = None,
     serve: bool = False,
 ) -> list[str]:
-    """Build the ``apptainer run af3-open.sif python run_alphafold_batch.py`` argv.
+    """Build a container command, or use AF3_NATIVE_PYTHON for an installed AF3 environment.
 
     Reads ``AF3_IMAGE`` / ``AF3_JAX_CACHE_DIR`` /
     ``AF3_MODEL_DIR`` from env (set by ``.ipd/.env.<cluster>``); raises
@@ -112,8 +138,34 @@ def build_apptainer_fold_command(
             subprocess loads AF3 once and reads manifest paths on stdin
             instead of folding a single ``--manifest`` argument and exiting.
     """
+    native_python = os.environ.get("AF3_NATIVE_PYTHON", "").strip()
+    if native_python:
+        # Preserve interpreter symlinks: resolving a venv's python can select its base environment.
+        python_path = Path(os.path.abspath(Path(native_python).expanduser()))
+        if not python_path.is_file() or not os.access(python_path, os.X_OK):
+            raise OSError(f"AF3_NATIVE_PYTHON is not an executable interpreter: {native_python!r}")
+        script = Path(batch_script or _DEFAULT_BATCH_SCRIPT).resolve()
+        pythonpath = str(script.parent)
+        if inherited := os.environ.get("PYTHONPATH"):
+            pythonpath += os.pathsep + inherited
+        return [
+            "env",
+            f"CUDA_VISIBLE_DEVICES={int(gpu_device)}",
+            "XLA_PYTHON_CLIENT_PREALLOCATE=false",
+            "JAX_PLATFORMS=cuda",
+            # Optional XLA autotuning disk writes fail on some shared filesystems.
+            # This preserves JAX's normal compilation cache and GPU autotuning itself.
+            "JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES="
+            + os.environ.get("JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES", "none"),
+            f"AF3_MODEL_DIR={_require('AF3_MODEL_DIR')}",
+            f"PYTHONPATH={pythonpath}",
+            str(python_path),
+            str(script),
+            *_worker_args(manifest_path, save_full_outputs, serve),
+        ]
+
     sif = _require("AF3_IMAGE")
-    jax_cache = _require("AF3_JAX_CACHE_DIR")
+    _require("AF3_JAX_CACHE_DIR")
     weights = _require("AF3_MODEL_DIR")
     if batch_script is None:
         batch_script = _DEFAULT_BATCH_SCRIPT
@@ -138,18 +190,6 @@ def build_apptainer_fold_command(
         sif,
         "python",
         str(batch_script),
-        f"--num_recycles={AF3_NUM_RECYCLES}",
-        f"--flash_attention_implementation={AF3_FLASH_ATTENTION_IMPLEMENTATION}",
-        "--num_diffusion_samples=1",
-        "--gpu_device=0",
-        f"--jax_compilation_cache_dir={jax_cache}",
-        f"--model_dir={weights}",
-        f"--save_full_outputs={'true' if save_full_outputs else 'false'}",
+        *_worker_args(manifest_path, save_full_outputs, serve),
     ]
-    if serve:
-        cmd.append("--serve")
-    else:
-        if manifest_path is None:
-            raise ValueError("manifest_path is required when serve is False.")
-        cmd.append(f"--manifest={manifest_path}")
     return cmd
